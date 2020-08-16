@@ -12,8 +12,9 @@ static struct option long_options[] = {
     {"list-devices", no_argument,       0, 'L'},
     {"offset",       required_argument, 0, 'o'},
     {"quiet",        no_argument,       0, 'q'},
-    {"size",         required_argument, 0, 's'},
+    {"save",         required_argument, 0, 's'},
     {"verbose",      no_argument,       0, 'v'},
+    {"size",         required_argument, 0, 'z'},
     {0, 0, 0, 0}
 };
 
@@ -31,6 +32,29 @@ static struct {
 };
 
 static struct {
+    const char *name;
+    int type;
+} save_types[] = {
+    {"none",    SAVETYPE_NONE},
+
+    {"eeprom",  SAVETYPE_EEP4K},
+    {"eep4k",   SAVETYPE_EEP4K},
+
+    {"eep16k",  SAVETYPE_EEP16K},
+
+    {"sram",    SAVETYPE_SRAM256K},
+    {"sram256k",SAVETYPE_SRAM256K},
+
+    {"sram768k",SAVETYPE_SRAM768K},
+
+    {"flash",   SAVETYPE_FLASH},
+
+    {"flashpk", SAVETYPE_FLASHPK},
+
+    {NULL, 0}
+};
+
+static struct {
     int num;
     int cic;
     uint32_t crc32; //of bootcode
@@ -41,10 +65,15 @@ static struct {
     {7101, CIC_7101, 0xFFFFFFFF, "most PAL games"},
     {7102, CIC_7102, 0xFFFFFFFF, "Lylat Wars"},
     { 103, CIC_X103, 0x0B050EE0, "covers 6103 and 7103"},
+    {6103, CIC_X103, 0x0B050EE0, "6103"},
+    {7103, CIC_X103, 0x0B050EE0, "7103"},
     { 105, CIC_X105, 0x98BC2C86, "covers 6105 and 7105"},
+    {6105, CIC_X105, 0x98BC2C86, "6105"},
+    {7105, CIC_X105, 0x98BC2C86, "7105"},
     { 106, CIC_X106, 0xACC8580A, "covers 6106 and 7106"},
+    {6106, CIC_X106, 0xACC8580A, "6106"},
+    {7106, CIC_X106, 0xACC8580A, "7106"},
     {5101, CIC_5101, 0xFFFFFFFF, "Aleck64"},
-    //8303: JP 64DD (not dumped)
     {0, 0, 0, NULL}
 };
 
@@ -409,6 +438,17 @@ int device_set_cic(sixtyfourDrive *device, int cic) {
     return device_send_cmd(device, DEV_CMD_SETCIC, 1, &param, NULL, 0);
 }
 
+int device_set_save(sixtyfourDrive *device, int save_type) {
+    if(verbosity > 0) {
+        printf(" * Selecting save type %s (#%d)\n",
+	    save_types[save_type].name,
+	    save_type
+	);
+    }
+
+    uint32_t param = save_type;
+    return device_send_cmd(device, DEV_CMD_SETSAVE, 1, &param, NULL, 0);
+}
 
 int device_open(sixtyfourDrive *device) {
     //return device version: 2=HW2 1=HW1 0=not found
@@ -520,6 +560,7 @@ void show_help() {
         "  -o, --offset OFFSET  upload to/download from specified offset "
         "(default: 0)\n"
         "  -q, --quiet          be quiet (no progress indicators)\n"
+	"  -s, --save SAVETYPE  set save type\n"
         "  -v, --verbose        be verbose (repeat for more verbosity)\n"
         "  -z, --size SIZE      up/download specified size "
         "(default: entire file)\n"
@@ -528,7 +569,7 @@ void show_help() {
         "CIC is one of:\n"
         "  auto (use before -l)\n"
     );
-    for(int i=0; i<CIC_LAST; i++) {
+    for(int i=0; cic_types[i].num != 0; i++) {
         printf("  %4d (%s)\n", cic_types[i].num, cic_types[i].desc);
     }
     printf(
@@ -540,6 +581,9 @@ void show_help() {
         "\n"
         "FILE is a file path, or \"-\" for stdin (for upload)/"
         "stdout (for download).\n"
+	"\n"
+	"SAVETYPE is one of: none, eep4k, eep16k, sram256k, sram768k,\n"
+	"  flash, flashpk (for Pokemon Stadium 2)\n"
         "\n"
         "-b sets the bank for ALL following up/downloads (until another -b).\n"
         "-o and -s set the offset and size for ONLY THE NEXT up/download.\n"
@@ -568,6 +612,7 @@ int main(int argc, char **argv) {
     int bank = BANK_CARTROM;
     int64_t fileSize = -1, fileOffset = 0;
     int autoCIC = 0;
+    int saveType = 0;
 
     if(argc < 2) {
         show_help();
@@ -576,7 +621,7 @@ int main(int argc, char **argv) {
 
     while(1) {
         int c = getopt_long(argc, argv,
-            "b:c:d:D:z:hil:Lo:qs:v", long_options, NULL);
+            "b:c:d:D:z:hil:Lo:qs:vz:", long_options, NULL);
         if(c < 0) break;
         switch(c) {
             case 'b': { //specify bank
@@ -589,8 +634,8 @@ int main(int argc, char **argv) {
                 }
                 if(bank < 0) {
                     bank = atoi(optarg);
-                    if(bank < 0 || bank >= BANK_LAST) { //Windows version compat
-                        fprintf(stderr, "Invalid bank\n");
+                    if(bank < 0 || bank >= BANK_LAST) { //windows version compat
+                        fprintf(stderr, "invalid bank\n");
                         return EXIT_FAILURE;
                     }
                 }
@@ -715,8 +760,24 @@ int main(int argc, char **argv) {
                 verbosity = -1;
                 break;
 
-            //s: set save emulation type (not implemented)
-            //was set size in old versions (changed to z)
+	    case 's': { //set save type
+                saveType = -1;
+                for(int i=0; save_types[i].name; i++) {
+                    if(!strcmp(optarg, save_types[i].name)) {
+                        saveType = save_types[i].type;
+                        break;
+                    }
+                }
+                if(saveType < 0) {
+                    if(saveType < 0 || saveType >= SAVETYPE_LAST) {
+                        fprintf(stderr, "invalid save type\n");
+                        return EXIT_FAILURE;
+                    }
+                }
+                setup_or_die(&device);
+                device_set_save(&device, saveType);
+	        break;
+	    }
 
             case 'v': //verbose
                 verbosity++;
